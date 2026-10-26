@@ -32,16 +32,29 @@ class RobustYuNet {
         256,
         cv.MatType.CV_8UC1,
         List.generate(256, (i) => (255 * math.pow(i / 255, .72)).round()),
+      ),
+      _strongGamma = cv.Mat.fromList(
+        1,
+        256,
+        cv.MatType.CV_8UC1,
+        List.generate(256, (i) => (255 * math.pow(i / 255, .45)).round()),
+      ),
+      _poseGamma = cv.Mat.fromList(
+        1,
+        256,
+        cv.MatType.CV_8UC1,
+        List.generate(256, (i) => (255 * math.pow(i / 255, .35)).round()),
       );
 
   final cv.FaceDetectorYN _detector;
   final cv.CLAHE _clahe;
-  final cv.Mat _gamma;
+  final cv.Mat _gamma, _strongGamma, _poseGamma;
+  cv.Mat? _previousGray;
   int _frameIndex = 0, _missedRegionFrames = 0;
   (int, int)? _frameSize;
   List<FaceBox> _previousBoxes = [];
   final _poseHints = <_PoseHint>[];
-  int _poseIndex = 0;
+  int _poseIndex = 0, _tileIndex = 0;
   static const _poses = <(double, double, double)>[
     (0, 1, 1.35),
     (25, 1, 1),
@@ -63,6 +76,9 @@ class RobustYuNet {
     _frameSize = null;
     _poseHints.clear();
     _poseIndex = 0;
+    _tileIndex = 0;
+    _previousGray?.dispose();
+    _previousGray = null;
   }
 
   List<YuNetCandidate> detect(cv.Mat frame) {
@@ -73,90 +89,252 @@ class RobustYuNet {
       reset();
       _frameSize = (width, height);
     }
-    final longest = math.max(width, height);
-    final results = _infer(
-      frame,
-      math.min(1.0, 640 / longest),
-      proposals: true,
-    );
-    final detailScan = _frameIndex++ % 5 == 0;
-    if (detailScan && longest > 640) {
-      results.addAll(
-        _infer(frame, math.min(1.0, 1280 / longest), proposals: true),
-      );
-    }
-    final proposals = deduplicateYuNet(results);
-    var accepted = proposals.where(validYuNetCandidate).toList();
-    for (final candidate in proposals.take(2)) {
-      if (accepted.any((face) => candidate.box.overlap(face.box) > .3)) {
-        continue;
+    cv.Mat? gray;
+    try {
+      if (_poseHints.isNotEmpty) {
+        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY);
+        if (_previousGray != null) _movePoseHints(gray);
       }
-      if (watch.elapsedMicroseconds >= 70000) break;
-      final rectified = _inferLandmarkPose(
+      final longest = math.max(width, height);
+      final results = _infer(
         frame,
-        candidate.box,
-        PoseAffine.landmarkAnchors(candidate),
+        math.min(1.0, 640 / longest),
+        proposals: true,
       );
-      if (rectified.isNotEmpty) {
-        _rememberPose(
-          _PoseHint(
-            rectified.first.box,
-            anchors: PoseAffine.landmarkAnchors(rectified.first),
-          ),
+      final detailScan = _frameIndex++ % 5 == 0;
+      if (detailScan && longest > 640) {
+        results.addAll(
+          _infer(frame, math.min(1.0, 1280 / longest), proposals: true),
         );
-        accepted.addAll(rectified);
       }
-    }
-    final regions = deduplicateYuNet([
-      for (final box in _previousBoxes) YuNetCandidate(box, 1, const []),
-      ...proposals.where((face) => !validYuNetCandidate(face)),
-    ]);
-    for (final region in regions.take(4)) {
-      if (accepted.any((face) => region.box.overlap(face.box) > .3)) continue;
-      accepted.addAll(_refineRegion(frame, region.box));
-    }
-    if (detailScan && accepted.isEmpty) {
-      final small = _resize(frame, math.min(1.0, 960 / longest));
-      cv.Mat? enhanced;
-      try {
-        enhanced = enhanceShadows(small);
-        if (enhanced != null) {
-          final candidates = _infer(enhanced, 1, proposals: true);
-          final sx = width / small.cols, sy = height / small.rows;
-          for (final face in candidates.take(4)) {
-            final box = face.box;
-            accepted.addAll(
-              _refineRegion(
-                frame,
+      final proposals = deduplicateYuNet(results);
+      var accepted = proposals.where(validYuNetCandidate).toList();
+      for (final candidate in proposals.take(2)) {
+        if (accepted.any((face) => candidate.box.overlap(face.box) > .3)) {
+          continue;
+        }
+        if (watch.elapsedMicroseconds >= 70000) break;
+        final rectified = _inferLandmarkPose(
+          frame,
+          candidate.box,
+          PoseAffine.landmarkAnchors(candidate),
+        );
+        if (rectified.isNotEmpty) {
+          _rememberPose(
+            _PoseHint(
+              candidate.box,
+              anchors: PoseAffine.landmarkAnchors(candidate),
+            ),
+          );
+          accepted.addAll(rectified);
+        }
+      }
+      final regions = deduplicateYuNet([
+        for (final box in _previousBoxes) YuNetCandidate(box, 1, const []),
+        ...proposals.where((face) => !validYuNetCandidate(face)),
+      ]);
+      for (final region in regions.take(4)) {
+        if (accepted.any((face) => region.box.overlap(face.box) > .3)) continue;
+        accepted.addAll(_refineRegion(frame, region.box));
+      }
+      if (detailScan && accepted.isEmpty) {
+        final small = _resize(frame, math.min(1.0, 960 / longest));
+        cv.Mat? enhanced, strong;
+        try {
+          enhanced = enhanceShadows(small);
+          if (enhanced != null) {
+            var candidates = _infer(enhanced, 1, proposals: true);
+            if (candidates.isEmpty) {
+              strong = enhanceShadows(small, strong: true);
+              if (strong != null) {
+                candidates = _infer(strong, 1, proposals: true);
+              }
+            }
+            final sx = width / small.cols, sy = height / small.rows;
+            for (final face in candidates.take(4)) {
+              final box = face.box;
+              final mapped = YuNetCandidate(
                 FaceBox(
                   (box.x * sx).roundToDouble(),
                   (box.y * sy).roundToDouble(),
                   (box.width * sx).roundToDouble(),
                   (box.height * sy).roundToDouble(),
                 ),
-              ),
-            );
+                face.score,
+                [for (final p in face.landmarks) (p.$1 * sx, p.$2 * sy)],
+              );
+              final anchors = PoseAffine.landmarkAnchors(mapped);
+              var refined = _inferLandmarkPose(frame, mapped.box, anchors);
+              if (refined.isNotEmpty) {
+                _rememberPose(_PoseHint(mapped.box, anchors: anchors));
+              } else {
+                refined = _refineRegion(frame, mapped.box);
+              }
+              accepted.addAll(refined);
+            }
           }
+        } finally {
+          strong?.dispose();
+          enhanced?.dispose();
+          small.dispose();
+        }
+      }
+      if ((accepted.isEmpty || detailScan) &&
+          watch.elapsedMicroseconds < 70000) {
+        if (accepted.isEmpty && longest <= 640 && _frameIndex.isOdd) {
+          accepted.addAll(_searchTiles(frame));
+        } else {
+          accepted.addAll(_searchPoses(frame));
+        }
+      }
+      accepted = deduplicateYuNet(accepted);
+      if (accepted.isNotEmpty) {
+        _previousBoxes = [
+          for (final face in accepted) _stableRegion(face.box, regions),
+        ];
+        _missedRegionFrames = 0;
+      } else if (++_missedRegionFrames > 3) {
+        _previousBoxes = [];
+        _poseHints.clear();
+      }
+      _previousGray?.dispose();
+      _previousGray = null;
+      if (_poseHints.isNotEmpty) {
+        _previousGray = gray ?? cv.cvtColor(frame, cv.COLOR_BGR2GRAY);
+        gray = null;
+      }
+      return accepted;
+    } finally {
+      gray?.dispose();
+    }
+  }
+
+  cv.Mat _region(cv.Mat frame, int left, int top, int right, int bottom) {
+    final rect = cv.Rect(left, top, right - left, bottom - top);
+    try {
+      return frame.region(rect);
+    } finally {
+      rect.dispose();
+    }
+  }
+
+  // Template matching moves search hints only. A fresh model hit is still required.
+  void _movePoseHints(cv.Mat gray) {
+    for (var index = 0; index < _poseHints.length; index++) {
+      final hint = _poseHints[index], box = hint.box;
+      if (math.max(box.width, box.height) > 192) continue;
+      final left = math.max(0, box.x.truncate());
+      final top = math.max(0, box.y.truncate());
+      final right = math.min(gray.cols, (box.x + box.width).truncate());
+      final bottom = math.min(gray.rows, (box.y + box.height).truncate());
+      if (right <= left || bottom <= top) continue;
+      final template = _region(_previousGray!, left, top, right, bottom);
+      cv.Mat? search, scores;
+      try {
+        final (mean, deviation) = cv.meanStdDev(template);
+        final contrast = deviation.val1;
+        mean.dispose();
+        deviation.dispose();
+        if (contrast < 3) continue;
+        final margin = math.max(
+          4,
+          (math.min(box.width, box.height) * .35).round(),
+        );
+        final sx = math.max(0, left - margin), sy = math.max(0, top - margin);
+        search = _region(
+          gray,
+          sx,
+          sy,
+          math.min(gray.cols, right + margin),
+          math.min(gray.rows, bottom + margin),
+        );
+        scores = cv.matchTemplate(search, template, cv.TM_CCOEFF_NORMED);
+        final mask = cv.Mat.empty();
+        try {
+          final extrema = cv.minMaxLoc(scores, mask: mask);
+          final score = extrema.$2;
+          final dx = sx + extrema.$4.x - left, dy = sy + extrema.$4.y - top;
+          extrema.$3.dispose();
+          extrema.$4.dispose();
+          if (!score.isFinite || score < .8) continue;
+          _poseHints[index] = _PoseHint(
+            FaceBox(box.x + dx, box.y + dy, box.width, box.height),
+            anchors: hint.anchors,
+            rotation: hint.rotation,
+          );
+          _previousBoxes = [
+            for (final old in _previousBoxes)
+              old.overlap(box) > .3
+                  ? FaceBox(old.x + dx, old.y + dy, old.width, old.height)
+                  : old,
+          ];
+        } finally {
+          mask.dispose();
         }
       } finally {
-        enhanced?.dispose();
-        small.dispose();
+        scores?.dispose();
+        search?.dispose();
+        template.dispose();
       }
     }
-    if ((accepted.isEmpty || detailScan) && watch.elapsedMicroseconds < 70000) {
-      accepted.addAll(_searchPoses(frame));
-    }
-    accepted = deduplicateYuNet(accepted);
-    if (accepted.isNotEmpty) {
-      _previousBoxes = [
-        for (final face in accepted) _stableRegion(face.box, regions),
+  }
+
+  List<YuNetCandidate> _searchTiles(cv.Mat frame) {
+    final width = (frame.cols * .6).round(), height = (frame.rows * .6).round();
+    final right = frame.cols - width, bottom = frame.rows - height;
+    final positions = [
+      (right ~/ 2, bottom ~/ 3),
+      (0, 0),
+      (right, 0),
+      (0, bottom),
+      (right, bottom),
+    ];
+    final (left, top) = positions[_tileIndex++ % positions.length];
+    final tile = _region(frame, left, top, left + width, top + height);
+    cv.Mat? enhanced;
+    try {
+      enhanced = enhanceShadows(tile, strong: true);
+      final proposals = _infer(
+        enhanced ?? tile,
+        math.min(2.5, 640 / math.max(width, height)),
+        proposals: true,
+      );
+      final accepted = <YuNetCandidate>[];
+      for (final candidate in proposals.take(2)) {
+        if (validYuNetCandidate(candidate)) {
+          accepted.add(candidate);
+          continue;
+        }
+        final anchors = PoseAffine.landmarkAnchors(candidate);
+        var refined = _inferLandmarkPose(tile, candidate.box, anchors);
+        if (refined.isNotEmpty) {
+          _rememberPose(
+            _PoseHint(
+              candidate.shifted(left.toDouble(), top.toDouble()).box,
+              anchors: anchors,
+            ),
+          );
+        } else {
+          refined = _refineRegion(tile, candidate.box, allowPose: false);
+        }
+        accepted.addAll(refined);
+      }
+      final mapped = [
+        for (final face in accepted)
+          face.shifted(left.toDouble(), top.toDouble()),
       ];
-      _missedRegionFrames = 0;
-    } else if (++_missedRegionFrames > 3) {
-      _previousBoxes = [];
-      _poseHints.clear();
+      for (final face in mapped) {
+        if (!_poseHints.any((hint) => hint.box.overlap(face.box) > .3)) {
+          _rememberPose(
+            _PoseHint(face.box, anchors: PoseAffine.landmarkAnchors(face)),
+          );
+        }
+      }
+      return mapped;
+    } finally {
+      enhanced?.dispose();
+      tile.dispose();
     }
-    return accepted;
   }
 
   FaceBox _stableRegion(FaceBox box, List<YuNetCandidate> regions) {
@@ -195,7 +373,7 @@ class RobustYuNet {
     final rect = cv.Rect(left, top, right - left, bottom - top);
     final crop = frame.region(rect);
     rect.dispose();
-    cv.Mat? enhanced;
+    cv.Mat? enhanced, strong;
     try {
       if (allowPose) {
         for (var index = 0; index < _poseHints.length; index++) {
@@ -215,13 +393,15 @@ class RobustYuNet {
               for (final face in poseResults)
                 face.shifted(left.toDouble(), top.toDouble()),
             ];
-            _poseHints[index] = _PoseHint(
-              mapped.first.box,
-              rotation: hint.rotation,
-              anchors: hint.anchors == null
-                  ? null
-                  : PoseAffine.landmarkAnchors(mapped.first),
-            );
+            if (mapped.first.box.overlap(hint.box) < .7) {
+              _poseHints[index] = _PoseHint(
+                mapped.first.box,
+                rotation: hint.rotation,
+                anchors: hint.anchors == null
+                    ? null
+                    : PoseAffine.landmarkAnchors(mapped.first),
+              );
+            }
             return mapped;
           }
         }
@@ -237,11 +417,21 @@ class RobustYuNet {
       if (results.isEmpty && enhanced != null) {
         results = _infer(enhanced, math.min(4.0, 320 / longest));
       }
+      if (results.isEmpty) {
+        strong = enhanceShadows(crop, strong: true);
+        if (strong != null) {
+          results = _infer(strong, scale);
+          if (results.isEmpty) {
+            results = _infer(strong, math.min(4.0, 320 / longest));
+          }
+        }
+      }
       return [
         for (final face in results)
           face.shifted(left.toDouble(), top.toDouble()),
       ];
     } finally {
+      strong?.dispose();
       enhanced?.dispose();
       crop.dispose();
     }
@@ -274,7 +464,40 @@ class RobustYuNet {
       var candidates = _infer(warped, 1);
       if (candidates.isEmpty) {
         enhanced = enhanceShadows(warped);
-        if (enhanced != null) candidates = _infer(enhanced, 1);
+        if (enhanced != null) {
+          candidates = _infer(enhanced, 1);
+          if (candidates.isEmpty) {
+            candidates = _infer(
+              enhanced,
+              320 / math.max(warped.cols, warped.rows),
+            );
+          }
+        }
+      }
+      if (candidates.isEmpty) {
+        final lab = cv.cvtColor(warped, cv.COLOR_BGR2Lab);
+        final light = cv.extractChannel(lab, 0);
+        try {
+          for (final lut in [_strongGamma, _poseGamma]) {
+            final lifted = cv.LUT(light, lut);
+            cv.Mat? exposed;
+            try {
+              cv.insertChannel(lifted, lab, 0);
+              exposed = cv.cvtColor(lab, cv.COLOR_Lab2BGR);
+              candidates = _infer(
+                exposed,
+                320 / math.max(warped.cols, warped.rows),
+              );
+            } finally {
+              exposed?.dispose();
+              lifted.dispose();
+            }
+            if (candidates.isNotEmpty) break;
+          }
+        } finally {
+          light.dispose();
+          lab.dispose();
+        }
       }
       return _mapPoseResults(
         frame,
@@ -364,7 +587,7 @@ class RobustYuNet {
   ) {
     final results = <YuNetCandidate>[];
     for (final candidate in candidates) {
-      if (candidate.score < .88) continue;
+      if (candidate.score < yuNetScoreThreshold) continue;
       final box = candidate.box;
       final corners = [
         for (final p in <FacePoint>[
@@ -401,13 +624,7 @@ class RobustYuNet {
             (bottom - top).toDouble(),
           ),
           candidate.score,
-          [
-            for (final p in candidate.landmarks)
-              (
-                inverse.map(p).$1.roundToDouble(),
-                inverse.map(p).$2.roundToDouble(),
-              ),
-          ],
+          [for (final p in candidate.landmarks) inverse.map(p)],
         ),
       );
     }
@@ -472,10 +689,7 @@ class RobustYuNet {
               (bottom - top).toDouble(),
             ),
             candidate.score,
-            [
-              for (final p in candidate.landmarks)
-                (p.$1.roundToDouble(), p.$2.roundToDouble()),
-            ],
+            candidate.landmarks,
           ),
         );
       }
@@ -487,7 +701,7 @@ class RobustYuNet {
   }
 
   /// Identical LAB/CLAHE/gamma blending to the PC shadow recovery path.
-  cv.Mat? enhanceShadows(cv.Mat frame) {
+  cv.Mat? enhanceShadows(cv.Mat frame, {bool strong = false}) {
     final lab = cv.cvtColor(frame, cv.COLOR_BGR2Lab);
     final light = cv.extractChannel(lab, 0);
     cv.Mat? local, lifted, blend;
@@ -503,7 +717,7 @@ class RobustYuNet {
       }
       if (shadows / samples < .01) return null;
       local = _clahe.apply(light);
-      lifted = cv.LUT(light, _gamma);
+      lifted = cv.LUT(light, strong ? _strongGamma : _gamma);
       blend = cv.addWeighted(lifted, .65, local, .35, 0);
       cv.insertChannel(blend, lab, 0);
       return cv.cvtColor(lab, cv.COLOR_Lab2BGR);
@@ -520,5 +734,9 @@ class RobustYuNet {
     _detector.dispose();
     _clahe.dispose();
     _gamma.dispose();
+    _strongGamma.dispose();
+    _poseGamma.dispose();
+    _previousGray?.dispose();
+    _previousGray = null;
   }
 }

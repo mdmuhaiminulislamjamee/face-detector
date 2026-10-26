@@ -10,6 +10,7 @@ import '../ncm/latest_frame_runner.dart';
 import '../ncm/ncm_camera_client.dart';
 import 'face_tracking_stabilizer.dart';
 import 'yunet_worker.dart';
+import 'single_face_selector.dart';
 
 class NcmDetectionFrame {
   const NcmDetectionFrame(this.source, this.result, this.faces, this.rotate180);
@@ -51,6 +52,7 @@ class NcmFaceDetectionService extends ChangeNotifier {
 
   final NcmCameraClient client;
   final JpegFaceProcessor _processor;
+  final _faceSelector = SingleFaceSelector();
   final _tracker = FaceTrackingStabilizer(
     responsiveMotion: true,
     minIouAssociationThreshold: .20,
@@ -118,6 +120,7 @@ class NcmFaceDetectionService extends ChangeNotifier {
   void _clearFrames() {
     _runner.clear();
     _tracker.clear();
+    _faceSelector.clear();
     _processingTimes.clear();
     _frame = null;
     _resetWorker = true;
@@ -138,6 +141,7 @@ class NcmFaceDetectionService extends ChangeNotifier {
     // Never display a late answer after a stall. A new frame will be processed next.
     if (client.elapsedMicros - source.receivedAtMicros > 750000) {
       _tracker.clear();
+      _faceSelector.clear();
       _resetWorker = true;
       return;
     }
@@ -145,6 +149,7 @@ class NcmFaceDetectionService extends ChangeNotifier {
         (_frame!.result.width != result.width ||
             _frame!.result.height != result.height)) {
       _tracker.clear();
+      _faceSelector.clear();
     }
     const landmarkTypes = [
       FaceLandmarkType.rightEye,
@@ -185,7 +190,9 @@ class NcmFaceDetectionService extends ChangeNotifier {
           },
         ),
     ];
-    final faces = _tracker.process(rawFaces: rawFaces, now: DateTime.now());
+    final faces = _faceSelector.select(
+      _tracker.process(rawFaces: rawFaces, now: DateTime.now()),
+    );
     _frame = NcmDetectionFrame(source, result, faces, _config.rotate180);
     _error = null;
     _notify();
@@ -194,6 +201,7 @@ class NcmFaceDetectionService extends ChangeNotifier {
   void _onError(Object error, StackTrace trace) {
     _frame = null;
     _tracker.clear();
+    _faceSelector.clear();
     _resetWorker = true;
     _error = 'Face processing failed: $error';
     _notify();

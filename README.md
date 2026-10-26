@@ -29,6 +29,10 @@ face-detector/
 
 ## Quick Start
 
+The application selects one confirmed face at a time and automatically replaces
+that target when its dropout hold expires. For app-team Android/iOS Flutter SDK
+deliveries, see [the handover builder and integration guides](handover/README.md).
+
 ### 1. Python Live Detector
 Run the batch script:
 ```cmd

@@ -1,0 +1,25 @@
+name: ncm_face_sdk
+description: On-device single-target YuNet face detection for USB-NCM JPEG cameras.
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: '>=3.11.5 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  dartcv4: 2.3.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  assets:
+    - assets/models/face_detection_yunet_2023mar.onnx
+    - assets/models/YUNET_LICENSE
+hooks:
+  user_defines:
+    dartcv4:
+      parallel_jobs: 2
+      include_modules: [imgcodecs, imgproc, objdetect, dnn]
+      ios:
+        deployment_target: '15.5'

@@ -1,0 +1,24 @@
+name: ncm_face_example
+description: Physical USB-NCM camera acceptance harness for the app team.
+publish_to: none
+version: 1.0.0+1
+environment:
+  sdk: '>=3.11.5 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  ncm_face_sdk:
+    path: ../sdk
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true
+hooks:
+  user_defines:
+    dartcv4:
+      parallel_jobs: 2
+      include_modules: [imgcodecs, imgproc, objdetect, dnn]
+      ios:
+        deployment_target: '15.5'

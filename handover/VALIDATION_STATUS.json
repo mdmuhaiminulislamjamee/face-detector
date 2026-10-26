@@ -1,0 +1,24 @@
+{
+  "status": "Source handover validated; physical phone acceptance required",
+  "release_date": "2026-10-26",
+  "pc_native_regressions": {
+    "passed": 54,
+    "includes": "real YuNet inference, loopback NCM JPEG stream, single-target selection and replacement, 10 FPS cap, stale-face/non-face checks"
+  },
+  "flutter_source_analysis": "App, standalone SDK, Android example and iOS example: no issues",
+  "flutter_unit_tests": { "passed": 83 },
+  "packaged_sdk_unit_tests": { "passed": 41 },
+  "packaged_example_unit_tests": {
+    "passed": 2,
+    "includes": "exact package model asset bytes/path and disconnected NCM UI"
+  },
+  "flutter_test_mode": "Host unit/widget/network tests; dartcv4.skip_build temporarily enabled for these test commands, then removed. Fake processors in service tests. These tests do not validate native phone inference.",
+  "local_flutter_sdk": "3.47.8 / Dart 3.13.7",
+  "configured_accepted_score": 0.85,
+  "max_public_selected_faces": 1,
+  "physical_android_inference_and_fps": "not verified; target device required",
+  "physical_ios_inference_and_fps": "not verified; Mac/Xcode and target device required",
+  "android_binary_build": "not verified; Android SDK/NDK/CMake required",
+  "ios_binary_build": "not verified; Mac/Xcode/CMake required",
+  "native_build_hooks": "enabled in delivered pubspecs"
+}

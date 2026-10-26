@@ -1,5 +1,12 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
+:: Apply before Python imports NumPy/OpenCV. Keep these limits local to this run.
+set "OPENBLAS_NUM_THREADS=1"
+set "GOTO_NUM_THREADS=1"
+set "OMP_NUM_THREADS=1"
+set "MKL_NUM_THREADS=1"
+set "NUMEXPR_NUM_THREADS=1"
+set "OPENCV_FOR_THREADS_NUM=2"
 title Live Face Detector and Tracker
 color 0b
 
@@ -65,6 +72,7 @@ echo [INFO] Launching Live Face Detector...
 echo [INFO] Source: %CAMERA_SOURCE_LABEL%
 echo [INFO] Webcam uses MJPEG; NCM receives JLIP JPEG packets. Latest frames only.
 echo [INFO] Detection and display limit: 10 FPS.
+echo [INFO] Native thread limits: BLAS 1, OpenCV 2.
 echo [INFO] Controls:
 echo          [Q] or [ESC] - Exit
 echo          [S]           - Save screenshot snapshot

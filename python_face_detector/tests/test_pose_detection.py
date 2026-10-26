@@ -31,7 +31,7 @@ class PoseDetectionTests(unittest.TestCase):
                 frame = pose_scene(self.portrait, pitch=pitch)
                 hits = [detector.detect(frame) for _ in range(12)]
                 self.assertTrue(all(len(found) == 1 for found in hits[-6:]))
-                self.assertTrue(all(score >= .88 for found in hits for _, score, _ in found))
+                self.assertTrue(all(score >= detector.SCORE_THRESHOLD for found in hits for _, score, _ in found))
                 for _ in range(5):
                     self.assertEqual(detector.detect(np.full_like(frame, 215)), [])
 
@@ -47,7 +47,7 @@ class PoseDetectionTests(unittest.TestCase):
                 for found in hits:
                     self.assertLessEqual(len(found), 1)
                     for box, score, landmarks in found:
-                        self.assertGreaterEqual(score, .88)
+                        self.assertGreaterEqual(score, detector.SCORE_THRESHOLD)
                         self.assertTrue(450 <= box[0] + box[2] / 2 <= 834)
                         self.assertTrue(160 <= box[1] + box[3] / 2 <= 544)
                         self.assertEqual(len(landmarks), 5)

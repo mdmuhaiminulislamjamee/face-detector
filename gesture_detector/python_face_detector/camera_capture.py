@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from threading import Condition, Event, Thread
 import time
 
-import cv2
+from native_runtime import load_native_libraries
+
+cv2, _ = load_native_libraries()
 
 
 class FrameRateLimiter:

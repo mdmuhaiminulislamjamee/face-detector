@@ -64,3 +64,6 @@ app.*.map.json
 **/tmp/
 **/artifacts/gesture_images/
 
+# Generated app-team handover snapshots and ZIPs
+/handover/output/
+

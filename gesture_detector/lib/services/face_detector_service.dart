@@ -11,6 +11,7 @@ import '../models/face_detector_options_model.dart';
 import '../utils/camera_image_converter.dart';
 import '../utils/face_candidate_validator.dart';
 import 'face_tracking_stabilizer.dart';
+import 'single_face_selector.dart';
 
 /// Service managing the ML Kit Face Detector lifecycle, configuration, image processing,
 /// and temporal tracking stabilization.
@@ -30,6 +31,7 @@ class FaceDetectorService {
 
   FaceDetectorConfig _config;
   final FaceTrackingStabilizer _stabilizer;
+  final _faceSelector = SingleFaceSelector();
   final CameraFrameProcessor _frameProcessor = CameraFrameProcessor();
   ml_face.FaceDetector? _detector;
   ml_face.FaceDetector? _contourDetector;
@@ -66,6 +68,7 @@ class FaceDetectorService {
   void clearTracking() {
     _generation++;
     _stabilizer.clear();
+    _faceSelector.clear();
     _cachedContourFaces = const [];
     _lastContourUpdateAt = null;
   }
@@ -260,10 +263,13 @@ class FaceDetectorService {
 
       // Apply tracking stabilizer (smoothing + dropout tolerance)
       // Confirmation remains enabled when visual smoothing is turned off.
-      return _stabilizer.process(rawFaces: detectedFaces, now: DateTime.now());
+      return _faceSelector.select(
+        _stabilizer.process(rawFaces: detectedFaces, now: DateTime.now()),
+      );
     } catch (error, stackTrace) {
       debugPrint('Face detection error: $error\n$stackTrace');
       _stabilizer.clear();
+      _faceSelector.clear();
       return const [];
     } finally {
       stopwatch.stop();

@@ -17,12 +17,19 @@ The PC test script also accepts this same board stream: run
 
 ## What matches the PC
 
+The app returns at most one selected face. It locks onto the largest confirmed
+target initially, preserves that lock while it is visible, and switches to a
+fresh confirmed alternative after the current track's 200ms dropout hold expires.
+The selected count remains zero or one even when internal scanning finds several
+candidates. Selection resets with the session and tracker. The app-team delivery
+builder and platform package instructions are in `../../handover/README.md`.
+
 | Component | PC webcam | Phone with USB-NCM |
 | --- | --- | --- |
 | Detector/model | OpenCV YuNet, `face_detection_yunet_2023mar.onnx` | Same model, bundled in the app |
 | Model SHA-256 | `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` | Identical |
 | Search | 640px full-frame each processed frame; 1280px detail every fifth | Same |
-| Search proposals / accepted score | 0.60 / 0.88 | Same |
+| Search proposals / accepted score | 0.60 / 0.85 | Same |
 | Native detail | Up to four fresh crop refinements, 192/320px, up to 4x | Same |
 | Backlight recovery | LAB, CLAHE 2.0 (8×8), gamma 0.72, 65/35 blend | Same |
 | Pose recovery | Fresh eye/mouth-aligned inference; bounded rotated/stretch search | Same algorithm |
@@ -36,7 +43,7 @@ This matches the model and detection policy, not a measured device benchmark. Th
 
 Pose handling uses a 0.94 gate for directly accepted foreshortened geometry, with
 extra mouth topology checks. Weak proposals instead need a fresh inference in an
-aligned view at the normal 0.88 floor. Box corners and all five landmarks map back
+aligned view at the normal 0.85 floor. Box corners and all five landmarks map back
 through the exact inverse transform. At most two full-frame alternatives are
 started per recovery pass, with a 25ms scheduling budget after the first start;
 recovery is skipped when earlier work has already exceeded 70ms. Native calls
@@ -118,10 +125,17 @@ No pending-frame queue can grow: each new frame replaces the pending one. Frames
 
 ### Automated checks
 
+The PC and mobile YuNet paths also search overlapping enlarged tiles in 640x480
+streams when a small face has no full-frame proposal. Strong exposure recovery
+and enlarged landmark-aligned views retain the 0.85 acceptance floor and existing
+geometry/temporal checks. Small pose-search regions can follow local pixel motion;
+these hints always need a fresh detector result and cannot keep a departed face
+alive. The native verifier's `--backlight` cases exercise this path on JPEGs.
+
 ```sh
 flutter analyze
 flutter test
-dart run tool/verify_yunet.dart --poses
+dart run tool/verify_yunet.dart --poses --backlight
 ```
 
 The first two require the Flutter SDK; normal tests also invoke OpenCV's native build hook, requiring the host C++ toolchain. The verifier calls the real OpenCV bindings and checks near/distant/backlit faces, moving JPEGs, disappearance, multiple faces, and non-face scenes. It requires CMake plus a host compiler (Visual Studio C++ on Windows, Xcode on macOS, or GCC/Clang on Linux).

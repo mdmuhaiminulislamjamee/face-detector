@@ -108,6 +108,22 @@ camera hardware. Real board/USB performance still needs a hardware run.
 
 ## Camera angles and pose recovery
 
+640x480 USB-NCM streams now get an enlarged search in overlapping image tiles
+when the initial scan misses a face. One tile alternates with pose recovery
+while searching, rather than requiring an existing face proposal first. Stronger
+shadow lifting and enlarged landmark-aligned inference address small, shadowed
+faces against bright windows. Landmark coordinates retain subpixel precision
+until drawing. A verified alignment remains steady; local template matching can
+move a small search region with the face, but never supplies a detection itself.
+All accepted results still require fresh YuNet confidence of at least **0.85**,
+the existing geometry gates, and three consecutive hits before display.
+
+`tests/benchmark_backlight.py` reports 640x480 JPEG recovery and latency, including
+an extremely underexposed case that may remain undetected. The related regression
+tests cover fresh consecutive hits, motion, disappearance, non-face/window
+patterns, and the NCM receive/detect/display path at its 10 FPS cap. These are
+synthetic tests; the exact physical low-camera/backlit view still needs a rerun.
+
 The detector rechecks uncertain face proposals after aligning their eye/mouth
 landmarks into an upright 192×224 view. This compensates moderate roll, pitch and
 perspective foreshortening, including low-camera views. A candidate must pass a
@@ -123,7 +139,7 @@ Ordinary accepted faces retain the fast path, and existing distant/backlit crop
 checks remain active. Pose hints retain only an alignment/search region and are
 verified on new pixels every frame; they are never returned as cached hits.
 
-The normal score floor stays **0.88**. Direct detections with unusually
+The normal score floor stays **0.85**. Direct detections with unusually
 foreshortened landmark geometry require **0.94** plus additional mouth direction
 and layout checks. Rotated/rectified detections are validated in their upright
 view and mapped back using the exact inverse transform, preserving box/landmark
@@ -139,6 +155,24 @@ be missed. No every-angle or zero-false-positive guarantee is made; retest the
 actual camera angle after restarting the process.
 
 ## Standard capture and display
+
+The app exposes at most one selected face. It initially selects the largest
+confirmed face, keeps that track while it remains visible, and automatically
+selects another freshly confirmed face after the current target's 200ms dropout
+hold expires. Held alternative faces cannot take over. Internal scanning still
+finds other candidates for confirmation, but the overlay/count show zero or one.
+Camera, resolution and session resets clear the lock. The profile JSON reports
+`max_selected_faces` so this behavior can be checked without a preview window.
+
+Native thread pools are bounded before importing OpenCV/NumPy: BLAS/OpenMP/MKL
+use one thread and OpenCV uses two. Both the batch launcher and direct Python
+entry points apply these process-local limits; no Windows settings are changed.
+If startup still reports an OpenBLAS allocation failure or a DLL paging-file
+error, Windows has insufficient committed-memory capacity. Close unnecessary
+apps or enable a system-managed Windows paging file and restart as required.
+The OpenCV 5 graph-engine target warning is separate from these startup failures.
+Use Q/Esc in the preview to quit; Ctrl+C in a batch console can display Windows'
+`Terminate batch job (Y/N)?` prompt.
 
 The camera requests 1920 x 1080 at 30 FPS (actual rates depend on the camera).
 MJPEG is requested **after** setting resolution, frame rate, and focus: DirectShow
@@ -156,7 +190,7 @@ The detector runs a 640-pixel image scan on every frame and a detailed scan up t
 1280 pixels every fifth frame. Previously found faces are checked again using
 fresh inference on small crops from the original camera pixels. New distant faces
 may take up to five processed frames to acquire. Weak proposals are checked again using enlarged image crops;
-they never appear unless the final score reaches 0.88. Dark regions receive a
+they never appear unless the final score reaches 0.85. Dark regions receive a
 bounded shadow lift and local contrast recovery, including against bright windows.
 Five-point landmark geometry and three consecutive observations are required.
 Turning off the tracking stabilizer disables smoothing, while confirmation stays on.

@@ -12,10 +12,10 @@ void require(bool condition, String message) {
   if (!condition) throw StateError(message);
 }
 
-cv.Mat background([int value = 215]) {
+cv.Mat background([int value = 215, int width = 1280, int height = 720]) {
   final colour = cv.Scalar.all(value.toDouble());
   try {
-    return cv.Mat.fromScalar(720, 1280, cv.MatType.CV_8UC3, colour);
+    return cv.Mat.fromScalar(height, width, cv.MatType.CV_8UC3, colour);
   } finally {
     colour.dispose();
   }
@@ -89,7 +89,8 @@ Map<String, Object> verifyPoses(RobustYuNet detector, cv.Mat portrait) {
       for (var index = 0; index < 30; index++) {
         final found = detector.detect(scene);
         require(
-          found.length <= 1 && found.every((face) => face.score >= .88),
+          found.length <= 1 &&
+              found.every((face) => face.score >= yuNetScoreThreshold),
           'Invalid pose detection for $pose',
         );
         if (found.isNotEmpty) {
@@ -119,6 +120,96 @@ Map<String, Object> verifyPoses(RobustYuNet detector, cv.Mat portrait) {
   return results;
 }
 
+cv.Mat backlitJpeg(cv.Mat portrait, int side, double brightness, double pitch) {
+  final scaled = cv.resize(portrait, (side, side));
+  final values = scaled.data;
+  for (var index = 0; index < values.length; index++) {
+    values[index] = (values[index] * brightness).truncate();
+  }
+  final a = 1 - 2 * pitch;
+  final matrix = cv.Mat.fromList(3, 3, cv.MatType.CV_64FC1, [
+    a,
+    -pitch,
+    pitch * side,
+    0,
+    a,
+    0,
+    0,
+    -2 * pitch / side,
+    1,
+  ]);
+  final border = cv.Scalar.all(220);
+  final warped = cv.warpPerspective(scaled, matrix, (
+    side,
+    side,
+  ), borderValue: border);
+  final scene = background(220, 640, 480);
+  final rect = cv.Rect(245, 100, side, side);
+  final target = scene.region(rect);
+  final params = cv.VecI32.fromList([cv.IMWRITE_JPEG_QUALITY, 80]);
+  try {
+    warped.copyTo(target);
+    final (ok, bytes) = cv.imencode('.jpg', scene, params: params);
+    require(ok, 'Could not encode the small backlight scene');
+    return cv.imdecode(bytes, cv.IMREAD_COLOR);
+  } finally {
+    params.dispose();
+    target.dispose();
+    rect.dispose();
+    scene.dispose();
+    warped.dispose();
+    border.dispose();
+    matrix.dispose();
+    scaled.dispose();
+  }
+}
+
+Map<String, Object> verifyBacklight(RobustYuNet detector, cv.Mat portrait) {
+  final results = <String, Object>{};
+  for (final scenario in <(int, double, double)>[
+    (112, .23, .2),
+    (160, .18, .3),
+    (128, .15, 0),
+  ]) {
+    detector.reset();
+    final scene = backlitJpeg(portrait, scenario.$1, scenario.$2, scenario.$3);
+    final blank = background(220, 640, 480);
+    try {
+      var hits = 0, consecutive = 0, bestRun = 0;
+      for (var index = 0; index < 18; index++) {
+        final found = detector.detect(scene);
+        require(
+          found.length <= 1 &&
+              found.every((face) => face.score >= yuNetScoreThreshold),
+          'Invalid recovered backlight candidate: $scenario',
+        );
+        if (found.isNotEmpty) {
+          hits++;
+          consecutive++;
+          if (consecutive > bestRun) bestRun = consecutive;
+        } else {
+          consecutive = 0;
+        }
+      }
+      require(
+        bestRun >= 3,
+        'Backlight $scenario could not produce consecutive fresh hits',
+      );
+      for (var index = 0; index < 5; index++) {
+        require(
+          detector.detect(blank).isEmpty,
+          'Backlight pose hint became a stale hit',
+        );
+      }
+      results['$scenario'] = {'hits': hits, 'best_consecutive_hits': bestRun};
+    } finally {
+      blank.dispose();
+      scene.dispose();
+    }
+  }
+  return results;
+}
+
 void main(List<String> arguments) {
   cv.setNumThreads(2);
   final detector = RobustYuNet(
@@ -129,6 +220,9 @@ void main(List<String> arguments) {
   try {
     if (arguments.contains('--poses')) {
       results['pose_checks'] = verifyPoses(detector, portrait);
+    }
+    if (arguments.contains('--backlight')) {
+      results['small_backlight_checks'] = verifyBacklight(detector, portrait);
     }
     for (final side in [512, 256, 128]) {
       for (final brightness in [1.0, .23]) {
@@ -144,7 +238,7 @@ void main(List<String> arguments) {
           );
           final face = faces.single;
           require(
-            face.score >= .88 &&
+            face.score >= yuNetScoreThreshold &&
                 face.box.x >= 500 &&
                 face.box.x < 500 + side &&
                 face.box.y >= 180 &&

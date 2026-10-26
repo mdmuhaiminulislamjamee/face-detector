@@ -14,12 +14,18 @@ import math
 import argparse
 from collections import deque
 import json
-import cv2
-import numpy as np
+from native_runtime import load_native_libraries, startup_error_message
+
+try:
+    cv2, np = load_native_libraries()
+except (ImportError, OSError, MemoryError) as error:
+    print(startup_error_message(error), file=sys.stderr)
+    raise SystemExit(1) from None
 
 from robust_face_detector import RobustFaceDetector
 from camera_capture import FrameRateLimiter, LatestFrameCapture, camera_description, open_camera
 from ncm_camera import NcmCameraConfig, NcmLatestFrameCapture, discover_camera
+from single_face_selector import SingleFaceSelector
 
 TARGET_FPS = 10
 
@@ -210,6 +216,7 @@ class LiveFaceDetectorApp:
         self.capture_reader = None
         self.detector = None
         self.stabilizer = FaceTrackingStabilizer()
+        self.face_selector = SingleFaceSelector()
         self.show_landmarks = True
         self.show_distance = True
         self.use_stabilizer = True
@@ -245,6 +252,7 @@ class LiveFaceDetectorApp:
 
     def _reset_tracking(self):
         self.stabilizer = FaceTrackingStabilizer()
+        self.face_selector.clear()
         self.detector.reset()
 
     def _draw_ncm_waiting(self, status):
@@ -346,7 +354,8 @@ class LiveFaceDetectorApp:
                     last_frame_at = packet.captured_at
                     self.stabilizer.smoothing_alpha = 0.65 if self.use_stabilizer else 1.0
                     self.stabilizer.hold_duration_sec = 0.20 if self.use_stabilizer else 0.0
-                    tracked_faces = self.stabilizer.update(raw_detections)
+                    tracked_faces = self.face_selector.select(
+                        self.stabilizer.update(raw_detections))
                     for face in tracked_faces:
                         self._draw_face_overlay(frame, face, h)
                     frame = self._prepare_preview(frame)
@@ -371,6 +380,7 @@ class LiveFaceDetectorApp:
                         'detection_ms': inference_ms,
                         'frame_age_ms': (completed - packet.captured_at) * 1000,
                         'processing_ms': (completed - started) * 1000,
+                        'selected_faces': len(tracked_faces),
                     })
                     if max_frames is not None and len(samples) >= max_frames:
                         break
@@ -403,6 +413,7 @@ class LiveFaceDetectorApp:
                     description = camera_description(self.cap)
                     self.capture_reader = LatestFrameCapture(self.cap)
                     self.stabilizer = FaceTrackingStabilizer()
+                    self.face_selector.clear()
                     self.detector.reset()
                     sequence = 0
                     display_times.clear()
@@ -425,6 +436,7 @@ class LiveFaceDetectorApp:
             report = dict(description, preview=show_window, frames=len(usable),
                           target_fps=TARGET_FPS,
                           live_fps=round((len(usable) - 1) / max(.001, elapsed), 2))
+            report['max_selected_faces'] = max(sample['selected_faces'] for sample in samples)
             if self.ncm_config is not None:
                 report['ncm'] = self.capture_reader.status()
             for metric in ('capture_read_ms', 'capture_fps', 'detection_ms',
@@ -528,8 +540,9 @@ class LiveFaceDetectorApp:
         # Facial landmarks
         if self.show_landmarks and face.landmarks and not is_holding:
             for lx, ly in face.landmarks:
-                cv2.circle(frame, (lx, ly), 4, (0, 0, 255), -1, cv2.LINE_AA)
-                cv2.circle(frame, (lx, ly), 2, (0, 255, 255), -1, cv2.LINE_AA)
+                point = (round(lx), round(ly))
+                cv2.circle(frame, point, 4, (0, 0, 255), -1, cv2.LINE_AA)
+                cv2.circle(frame, point, 2, (0, 255, 255), -1, cv2.LINE_AA)
 
     def _draw_hud(self, frame, face_count, fps):
         # Top banner background

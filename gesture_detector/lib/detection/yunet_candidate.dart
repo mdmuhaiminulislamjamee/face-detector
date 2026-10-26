@@ -2,6 +2,10 @@ import 'dart:math' as math;
 
 typedef FacePoint = (double, double);
 
+// Match the current PC acceptance policy, including pose recovery views.
+const yuNetScoreThreshold = 0.85;
+const yuNetPoseScoreThreshold = 0.94;
+
 class FaceBox {
   const FaceBox(this.x, this.y, this.width, this.height);
   final double x, y, width, height;
@@ -53,7 +57,7 @@ class YuNetCandidate {
 
 /// The same score and roll-tolerant landmark geometry checks as the PC detector.
 bool validYuNetCandidate(YuNetCandidate face, {bool proposal = false}) {
-  const threshold = 0.88;
+  const threshold = yuNetScoreThreshold;
   final box = face.box;
   if (face.landmarks.length != 5 ||
       !face.score.isFinite ||
@@ -103,7 +107,7 @@ bool validYuNetCandidate(YuNetCandidate face, {bool proposal = false}) {
   // Foreshortened pitch/yaw needs stronger confidence and coherent mouth topology.
   final mxLine = mouthB.$1 - mouthA.$1, myLine = mouthB.$2 - mouthA.$2;
   final mouthDistance = math.sqrt(mxLine * mxLine + myLine * myLine);
-  if ((!proposal && face.score < .94) ||
+  if ((!proposal && face.score < yuNetPoseScoreThreshold) ||
       skew > .9 ||
       noseDepth < -.4 ||
       noseDepth > 1.35 ||

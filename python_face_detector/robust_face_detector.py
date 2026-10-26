@@ -3,12 +3,13 @@
 from pathlib import Path
 import time
 
-import cv2
-import numpy as np
+from native_runtime import load_native_libraries
+
+cv2, np = load_native_libraries()
 
 
 class RobustFaceDetector:
-    SCORE_THRESHOLD = 0.88
+    SCORE_THRESHOLD = 0.85
     MIN_FACE_PIXELS = 18
     DETAIL_SCAN_INTERVAL = 5
     POSE_SCORE_THRESHOLD = .94
@@ -31,12 +32,18 @@ class RobustFaceDetector:
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self._gamma_lut = np.rint(
             255 * (np.arange(256) / 255.0) ** 0.72).astype(np.uint8)
+        self._strong_gamma_lut = np.rint(
+            255 * (np.arange(256) / 255.0) ** 0.45).astype(np.uint8)
+        self._pose_gamma_lut = np.rint(
+            255 * (np.arange(256) / 255.0) ** 0.35).astype(np.uint8)
         self._frame_index = 0
         self._previous_boxes = []
         self._frame_size = None
         self._missed_region_frames = 0
         self._pose_index = 0
         self._pose_hints = []
+        self._tile_index = 0
+        self._previous_gray = None
 
     def reset(self):
         self._frame_index = 0
@@ -45,6 +52,8 @@ class RobustFaceDetector:
         self._missed_region_frames = 0
         self._pose_index = 0
         self._pose_hints = []
+        self._tile_index = 0
+        self._previous_gray = None
 
     def detect(self, frame):
         if frame is None or frame.size == 0:
@@ -54,6 +63,9 @@ class RobustFaceDetector:
         if self._frame_size != (width, height):
             self.reset()
             self._frame_size = (width, height)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if self._pose_hints else None
+        if gray is not None and self._previous_gray is not None:
+            self._move_pose_hints(gray)
         # The entire image is scanned cheaply on every frame. Native pixels are
         # retained for fresh crop inference; cached boxes are never returned as hits.
         results = self._infer(frame, min(1.0, 640 / max(width, height)), True)
@@ -72,8 +84,7 @@ class RobustFaceDetector:
             descriptor = self._landmark_descriptor(box, points)
             rectified = self._infer_landmark_pose(frame, box, descriptor)
             if rectified:
-                self._remember_pose(rectified[0][0], self._landmark_descriptor(
-                    rectified[0][0], rectified[0][2]))
+                self._remember_pose(box, descriptor)
                 accepted.extend(rectified)
         regions = [(box, 1.0, []) for box in self._previous_boxes]
         regions.extend(item for item in proposals if not self.valid_candidate(*item))
@@ -90,15 +101,30 @@ class RobustFaceDetector:
             enhanced = self.enhance_shadows(small)
             if enhanced is not None:
                 candidates = self._infer(enhanced, 1.0, True)
+                if not candidates:
+                    strong = self.enhance_shadows(small, strong=True)
+                    if strong is not None:
+                        candidates = self._infer(strong, 1.0, True)
                 sx, sy = width / small.shape[1], height / small.shape[0]
-                for box, _, _ in candidates[:4]:
+                for box, _, points in candidates[:4]:
                     mapped = [round(box[0] * sx), round(box[1] * sy),
                               round(box[2] * sx), round(box[3] * sy)]
-                    accepted.extend(self._refine_region(frame, mapped))
-        # Search missing orientations using a small, scheduled inference budget.
-        # Once acquired, the pose is freshly checked on its native crop each frame.
+                    mapped_points = [(px * sx, py * sy) for px, py in points]
+                    descriptor = self._landmark_descriptor(mapped, mapped_points)
+                    refined = self._infer_landmark_pose(frame, mapped, descriptor)
+                    if refined:
+                        self._remember_pose(mapped, descriptor)
+                    else:
+                        refined = self._refine_region(frame, mapped)
+                    accepted.extend(refined)
+        # Alternate enlarged local searches with orientation searches while lost.
+        # A 640x480 NCM stream otherwise never gets an enlarged acquisition scan:
+        # crop refinement needs a proposal that the full-frame scan may not find.
         if (not accepted or detail_scan) and time.perf_counter() - started < .070:
-            accepted.extend(self._search_poses(frame))
+            if not accepted and max(width, height) <= 640 and self._frame_index % 2:
+                accepted.extend(self._search_tiles(frame))
+            else:
+                accepted.extend(self._search_poses(frame))
         accepted = self._deduplicate(accepted)
         # Keep the crop context steady; resizing a slightly different rectangle
         # every frame can make otherwise stationary small-face scores fluctuate.
@@ -113,7 +139,34 @@ class RobustFaceDetector:
             if self._missed_region_frames > 3:
                 self._previous_boxes = []
                 self._pose_hints = []
+        self._previous_gray = ((gray if gray is not None else
+            cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)) if self._pose_hints else None)
         return accepted
+
+    def _move_pose_hints(self, gray):
+        """Move SEARCH regions with local pixels; this never produces a hit."""
+        height, width = gray.shape
+        for index, (box, transform) in enumerate(self._pose_hints):
+            x, y, bw, bh = box
+            if max(bw, bh) > 192:
+                continue
+            left, top = max(0, int(x)), max(0, int(y))
+            right, bottom = min(width, int(x + bw)), min(height, int(y + bh))
+            template = self._previous_gray[top:bottom, left:right]
+            if template.size == 0 or float(np.std(template)) < 3:
+                continue
+            margin = max(4, round(min(bw, bh) * .35))
+            sx, sy = max(0, left - margin), max(0, top - margin)
+            search = gray[sy:min(height, bottom + margin), sx:min(width, right + margin)]
+            scores = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+            _, score, _, location = cv2.minMaxLoc(scores)
+            if not np.isfinite(score) or score < .8:
+                continue
+            dx, dy = sx + location[0] - left, sy + location[1] - top
+            shifted = [x + dx, y + dy, bw, bh]
+            self._pose_hints[index] = (shifted, transform)
+            self._previous_boxes = [[old[0] + dx, old[1] + dy, old[2], old[3]]
+                if self._overlap(old, box) > .3 else old for old in self._previous_boxes]
 
     def _stable_region(self, box, regions):
         x, y, width, height = box
@@ -149,9 +202,13 @@ class RobustFaceDetector:
                 mapped_results = [([local[0] + left, local[1] + top, local[2], local[3]], score,
                          [(px + left, py + top) for px, py in landmarks])
                         for local, score, landmarks in pose_results]
-                if transform[0] == 'landmarks':
-                    transform = self._landmark_descriptor(mapped_results[0][0], mapped_results[0][2])
-                self._pose_hints[index] = (mapped_results[0][0], transform)
+                # Keep the alignment steady for a stationary face. Repeatedly
+                # feeding predicted landmarks back into the warp can drift
+                # until the very same pixels stop passing the score gate.
+                if self._overlap(mapped_results[0][0], hint_box) < .7:
+                    if transform[0] == 'landmarks':
+                        transform = self._landmark_descriptor(mapped_results[0][0], mapped_results[0][2])
+                    self._pose_hints[index] = (mapped_results[0][0], transform)
                 return mapped_results
         scale = min(4.0, 192 / max(crop.shape[:2]))
         enhanced = None
@@ -164,11 +221,17 @@ class RobustFaceDetector:
             results = self._infer(crop, min(4.0, 320 / max(crop.shape[:2])))
         if not results and enhanced is not None:
             results = self._infer(enhanced, min(4.0, 320 / max(crop.shape[:2])))
+        if not results:
+            strong = self.enhance_shadows(crop, strong=True)
+            if strong is not None:
+                results = self._infer(strong, scale)
+                if not results:
+                    results = self._infer(strong, min(4.0, 320 / max(crop.shape[:2])))
         return [([local[0] + left, local[1] + top, local[2], local[3]], score,
                  [(px + left, py + top) for px, py in landmarks])
                 for local, score, landmarks in results]
 
-    def enhance_shadows(self, frame):
+    def enhance_shadows(self, frame, strong=False):
         """Lift recoverable shadows while limiting amplification of sensor noise."""
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         light = lab[:, :, 0]
@@ -177,9 +240,44 @@ class RobustFaceDetector:
         if np.mean((sampled >= 8) & (sampled < 85)) < 0.01:
             return None
         local = self.clahe.apply(light)
-        lifted = cv2.LUT(light, self._gamma_lut)
+        lifted = cv2.LUT(light, self._strong_gamma_lut if strong else self._gamma_lut)
         lab[:, :, 0] = cv2.addWeighted(lifted, 0.65, local, 0.35, 0)
         return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    def _search_tiles(self, frame):
+        """Search one overlapping, enlarged tile; retained hints are never hits."""
+        height, width = frame.shape[:2]
+        tile_width, tile_height = round(width * .6), round(height * .6)
+        right, bottom = width - tile_width, height - tile_height
+        positions = ((right // 2, bottom // 3), (0, 0), (right, 0),
+                     (0, bottom), (right, bottom))
+        left, top = positions[self._tile_index % len(positions)]
+        self._tile_index += 1
+        tile = frame[top:top + tile_height, left:left + tile_width]
+        enhanced = self.enhance_shadows(tile, strong=True)
+        view = tile if enhanced is None else enhanced
+        proposals = self._infer(view, min(2.5, 640 / max(tile.shape[:2])), True)
+        accepted = []
+        for candidate in proposals[:2]:
+            if self.valid_candidate(*candidate):
+                accepted.append(candidate)
+                continue
+            descriptor = self._landmark_descriptor(candidate[0], candidate[2])
+            refined = self._infer_landmark_pose(tile, candidate[0], descriptor)
+            if refined:
+                box = candidate[0]
+                self._remember_pose([box[0] + left, box[1] + top, box[2], box[3]],
+                                    descriptor)
+            else:
+                refined = self._refine_region(tile, candidate[0], allow_pose=False)
+            accepted.extend(refined)
+        mapped = [([box[0] + left, box[1] + top, box[2], box[3]], score,
+                   [(px + left, py + top) for px, py in points])
+                  for box, score, points in accepted]
+        for box, _, points in mapped:
+            if not any(self._overlap(box, hint) > .3 for hint, _ in self._pose_hints):
+                self._remember_pose(box, self._landmark_descriptor(box, points))
+        return mapped
 
     def _infer(self, frame, scale, include_proposals=False):
         height, width = frame.shape[:2]
@@ -206,7 +304,7 @@ class RobustFaceDetector:
             if min(right - left, bottom - top) < self.MIN_FACE_PIXELS:
                 continue
             results.append(([left, top, right - left, bottom - top], score,
-                            [tuple(map(int, np.rint(point))) for point in landmarks]))
+                            [tuple(map(float, point)) for point in landmarks]))
         return results
 
     @classmethod
@@ -288,6 +386,20 @@ class RobustFaceDetector:
             enhanced = self.enhance_shadows(warped)
             if enhanced is not None:
                 candidates = self._infer(enhanced, 1.0)
+                if not candidates:
+                    candidates = self._infer(enhanced, 320 / max(warped.shape[:2]))
+        if not candidates:
+            # Low-resolution JPEGs can lose texture under local equalization.
+            # Recheck the aligned face at a larger scale with smooth exposure
+            # curves. These views still need the original .88/geometry gates.
+            lab = cv2.cvtColor(warped, cv2.COLOR_BGR2LAB)
+            light = lab[:, :, 0].copy()
+            for lut in (self._strong_gamma_lut, self._pose_gamma_lut):
+                lab[:, :, 0] = cv2.LUT(light, lut)
+                exposed = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+                candidates = self._infer(exposed, 320 / max(warped.shape[:2]))
+                if candidates:
+                    break
         inverse = cv2.invertAffineTransform(matrix)
         mapped = self._map_pose_results(frame, candidates, inverse)
         return [item for item in mapped if self._overlap(box, item[0]) > .25]
@@ -345,7 +457,7 @@ class RobustFaceDetector:
             # Geometry was verified in the upright view. Re-validating against
             # its enlarged axis-aligned rotated box would reject valid poses again.
             results.append(([left, top, right - left, bottom - top], score,
-                            [tuple(map(int, np.rint(point))) for point in mapped_points]))
+                            [tuple(map(float, point)) for point in mapped_points]))
         return results
 
     def _search_poses(self, frame):

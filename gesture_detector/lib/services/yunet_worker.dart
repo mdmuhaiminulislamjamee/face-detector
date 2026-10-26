@@ -26,6 +26,11 @@ abstract interface class JpegFaceProcessor {
 
 /// One model, one isolate, one request at a time. No image work on Flutter's UI isolate.
 class YuNetWorker implements JpegFaceProcessor {
+  YuNetWorker({
+    this.modelAssetPath = 'assets/models/face_detection_yunet_2023mar.onnx',
+  });
+
+  final String modelAssetPath;
   Isolate? _isolate;
   SendPort? _commands;
   ReceivePort? _messages;
@@ -48,9 +53,7 @@ class YuNetWorker implements JpegFaceProcessor {
 
   Future<void> _initialize() async {
     if (_disposed) throw StateError('YuNet worker disposed');
-    final model = await rootBundle.load(
-      'assets/models/face_detection_yunet_2023mar.onnx',
-    );
+    final model = await rootBundle.load(modelAssetPath);
     if (_disposed) throw StateError('YuNet worker disposed');
     final messages = _messages = ReceivePort();
     final ready = _ready = Completer<void>();
