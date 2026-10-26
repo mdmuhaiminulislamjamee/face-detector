@@ -1,0 +1,65 @@
+# Local Git backups
+**/.git_backup*
+
+# Python
+**/.venv/
+**/venv/
+**/env/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+
+# Flutter / Dart
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+**/doc/api/
+**/.fvm/
+
+# Android
+**/android/.gradle/
+**/android/build/
+**/android/gradle/wrapper/build/
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+**/android/key.properties
+**/android/local.properties
+*.jks
+*.keystore
+
+# iOS / macOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/ServiceDefinitions.json
+
+# IDE / Editor
+**/.idea/
+**/.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and debug
+*.log
+flutter_*.log
+app.*.symbols
+app.*.map.json
+**/tmp/
+**/artifacts/gesture_images/

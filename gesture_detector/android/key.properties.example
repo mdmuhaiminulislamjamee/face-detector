@@ -1,0 +1,5 @@
+storePassword=replace-with-keystore-password
+keyPassword=replace-with-key-password
+keyAlias=replace-with-key-alias
+storeFile=../release-keystore.jks
+asx c
