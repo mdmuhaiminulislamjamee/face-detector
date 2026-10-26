@@ -25,6 +25,7 @@ The PC test script also accepts this same board stream: run
 | Search proposals / accepted score | 0.60 / 0.88 | Same |
 | Native detail | Up to four fresh crop refinements, 192/320px, up to 4x | Same |
 | Backlight recovery | LAB, CLAHE 2.0 (8×8), gamma 0.72, 65/35 blend | Same |
+| Pose recovery | Fresh eye/mouth-aligned inference; bounded rotated/stretch search | Same algorithm |
 | False-positive checks | Finite geometry, 18px minimum, five landmarks, IoU suppression | Same |
 | Confirmation / dropout | Three hits; 200ms hold, held boxes excluded from counts | Same policy |
 | Movement response | Alpha at least 0.92 during deliberate motion | Enabled for NCM |
@@ -32,6 +33,17 @@ The PC test script also accepts this same board stream: run
 | Source | Webcam/MJPEG | JPEG packets from the USB board |
 
 This matches the model and detection policy, not a measured device benchmark. The board's resolution, optics, JPEG compression, exposure, motion blur, and the phone CPU/thermal state still affect results. The app does not lower confidence or remove validation to reach its FPS target.
+
+Pose handling uses a 0.94 gate for directly accepted foreshortened geometry, with
+extra mouth topology checks. Weak proposals instead need a fresh inference in an
+aligned view at the normal 0.88 floor. Box corners and all five landmarks map back
+through the exact inverse transform. At most two full-frame alternatives are
+started per recovery pass, with a 25ms scheduling budget after the first start;
+recovery is skipped when earlier work has already exceeded 70ms. Native calls
+cannot be interrupted, so this is not a hard latency guarantee. Cached pose
+parameters are only search hints and need a fresh hit on each current image.
+Real 3-D occlusion at extreme pitch/yaw is still a model limitation; rotating a
+picture or checking synthetic perspective is not proof of every-angle detection.
 
 The NCM screen shows face boxes, five real YuNet landmarks, confidence, roll, and track IDs. YuNet does not output ML Kit's dense contours, smile probability or eye-open probability, so those values are not fabricated. The separate **Phone camera** option retains the ML Kit features and settings.
 
@@ -109,12 +121,12 @@ No pending-frame queue can grow: each new frame replaces the pending one. Frames
 ```sh
 flutter analyze
 flutter test
-dart run tool/verify_yunet.dart
+dart run tool/verify_yunet.dart --poses
 ```
 
 The first two require the Flutter SDK; normal tests also invoke OpenCV's native build hook, requiring the host C++ toolchain. The verifier calls the real OpenCV bindings and checks near/distant/backlit faces, moving JPEGs, disappearance, multiple faces, and non-face scenes. It requires CMake plus a host compiler (Visual Studio C++ on Windows, Xcode on macOS, or GCC/Clang on Linux).
 
-Local verification during this implementation: 73 Flutter tests passed with `dartcv4.skip_build` temporarily enabled for the test run, including real loopback TCP/UDP tests, worker loading/disposal tests, and a fake detector for pipeline/lifecycle checks. The option was then removed. Native inference and Android/iOS compilation could not be verified on this Windows machine because its CMake/C++/mobile toolchains are absent. These test results are not evidence of camera accuracy or phone FPS.
+Local verification during this implementation: 77 Flutter tests passed with `dartcv4.skip_build` temporarily enabled for the test run, including real loopback TCP/UDP tests, pose geometry/inverse-coordinate tests, worker loading/disposal tests, and a fake detector for pipeline/lifecycle checks. The option was then removed. Native mobile inference and Android/iOS compilation could not be verified on this Windows machine because its CMake/C++/mobile toolchains are absent. These test results are not evidence of camera accuracy or phone FPS. The Python pose/NCM tests exercise the real PC YuNet engine separately.
 
 ### Physical acceptance still required
 

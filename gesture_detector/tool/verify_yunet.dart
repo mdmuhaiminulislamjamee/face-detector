@@ -6,6 +6,7 @@ import 'package:dartcv4/dartcv.dart' as cv;
 
 import 'package:face_detector/detection/robust_yunet.dart';
 import 'package:face_detector/detection/yunet_candidate.dart';
+import 'package:face_detector/detection/pose_affine.dart';
 
 void require(bool condition, String message) {
   if (!condition) throw StateError(message);
@@ -47,7 +48,78 @@ void insertPortrait(
   }
 }
 
-void main() {
+Map<String, Object> verifyPoses(RobustYuNet detector, cv.Mat portrait) {
+  final results = <String, Object>{};
+  for (final pose in <(double, double, double, double)>[
+    (-40, 1, 1, 1),
+    (40, 1, 1, 1),
+    (-90, 1, 1, 1),
+    (90, 1, 1, 1),
+    (180, 1, 1, 1),
+    (0, 1, .65, 1),
+    (-25, 1, 1.35, .3),
+  ]) {
+    detector.reset();
+    final scaled = cv.resize(portrait, (384, 384));
+    final data = scaled.data;
+    if (pose.$4 != 1) {
+      for (var i = 0; i < data.length; i++) {
+        data[i] = (data[i] * pose.$4).truncate();
+      }
+    }
+    final affine = PoseAffine.rotated(384, 384, (pose.$1, pose.$2, pose.$3));
+    final matrix = cv.Mat.fromList(2, 3, cv.MatType.CV_64FC1, affine.values);
+    final border = cv.Scalar.all(215);
+    final warped = cv.warpAffine(scaled, matrix, (
+      affine.width,
+      affine.height,
+    ), borderValue: border);
+    final scene = background();
+    final rect = cv.Rect(
+      350,
+      (720 - affine.height) ~/ 2,
+      affine.width,
+      affine.height,
+    );
+    final target = scene.region(rect);
+    try {
+      warped.copyTo(target);
+      var hits = 0, consecutive = 0;
+      int? firstHit;
+      for (var index = 0; index < 30; index++) {
+        final found = detector.detect(scene);
+        require(
+          found.length <= 1 && found.every((face) => face.score >= .88),
+          'Invalid pose detection for $pose',
+        );
+        if (found.isNotEmpty) {
+          firstHit ??= index;
+          hits++;
+          consecutive++;
+        } else {
+          consecutive = 0;
+        }
+        if (consecutive >= 6) break;
+      }
+      require(
+        consecutive >= 3,
+        'Pose $pose could not produce fresh consecutive hits',
+      );
+      results['$pose'] = {'first_hit': firstHit!, 'hits': hits};
+    } finally {
+      target.dispose();
+      rect.dispose();
+      scene.dispose();
+      warped.dispose();
+      border.dispose();
+      matrix.dispose();
+      scaled.dispose();
+    }
+  }
+  return results;
+}
+
+void main(List<String> arguments) {
   cv.setNumThreads(2);
   final detector = RobustYuNet(
     File('assets/models/face_detection_yunet_2023mar.onnx').readAsBytesSync(),
@@ -55,6 +127,9 @@ void main() {
   final portrait = cv.imread('python_face_detector/tests/fixtures/face.jpg');
   final results = <String, Object>{};
   try {
+    if (arguments.contains('--poses')) {
+      results['pose_checks'] = verifyPoses(detector, portrait);
+    }
     for (final side in [512, 256, 128]) {
       for (final brightness in [1.0, .23]) {
         detector.reset();

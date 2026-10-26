@@ -63,3 +63,4 @@ app.*.symbols
 app.*.map.json
 **/tmp/
 **/artifacts/gesture_images/
+

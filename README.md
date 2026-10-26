@@ -20,7 +20,7 @@ face-detector/
 │   ├── robust_face_detector.py
 │   ├── ncm_camera.py
 │   └── requirements.txt
-├── run_face_detection.bat   # Windows batch runner for Python detector (Webcam)
+├── run_face_detection.bat   # Windows camera selection menu (Webcam / USB-NCM)
 ├── run_ncm_face_detection.bat # Windows batch runner for Python detector (USB-NCM)
 └── .gitignore
 ```
@@ -34,6 +34,9 @@ Run the batch script:
 ```cmd
 run_face_detection.bat
 ```
+Choose **1** for a standard webcam or **2** for the USB-NCM camera. With explicit
+arguments (such as `--ncm`), the launcher skips the menu.
+
 Or for USB-NCM camera input:
 ```cmd
 run_ncm_face_detection.bat

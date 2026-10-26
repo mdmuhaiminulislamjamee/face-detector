@@ -30,7 +30,7 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - run: dart run tool/verify_yunet.dart
+      - run: dart run tool/verify_yunet.dart --poses
       - run: flutter build apk --debug
       - uses: actions/upload-artifact@v4
         with:

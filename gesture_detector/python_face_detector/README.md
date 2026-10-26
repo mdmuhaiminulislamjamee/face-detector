@@ -1,7 +1,17 @@
 # Windows webcam and USB-NCM detector
 
-Run `..\run_face_detection.bat` or `run.bat`. The launcher uses the bundled YuNet
-ONNX model and requires OpenCV and NumPy; MediaPipe is no longer required.
+Run `..\run_face_detection.bat` or `run.bat` without arguments to choose:
+
+- **1: Webcam** — built-in camera or standard USB webcam, camera index `0`.
+- **2: USB-NCM camera** — the board's TCP/JLIP JPEG stream (`--ncm`).
+- **Q: Quit**.
+
+Explicit command-line arguments bypass the menu, for example
+`..\run_face_detection.bat --source webcam 1` or
+`..\run_face_detection.bat --ncm --ncm-host-ip auto`. The dedicated
+`..\run_ncm_face_detection.bat` shortcut also opens NCM directly.
+The launcher uses the bundled YuNet ONNX model and requires OpenCV and NumPy;
+MediaPipe is no longer required.
 
 ## Test the NCM board with live_face_detector.py
 
@@ -19,8 +29,10 @@ cd python_face_detector
 .venv\Scripts\python.exe live_face_detector.py --ncm
 ```
 
-`--source ncm` is equivalent to `--ncm`. With no source argument, the script
-continues to open the normal webcam index (default `0`). The NCM source uses the
+`--source ncm` is equivalent to `--ncm`. When calling `live_face_detector.py`
+directly with no source argument, it opens the normal webcam index (default `0`);
+the batch launcher's no-argument menu selects the appropriate source for you.
+The NCM source uses the
 same `RobustFaceDetector`, model, multi-scale/backlight processing, strict
 confidence and landmark gates, three-hit confirmation, and 10 FPS cap.
 
@@ -94,7 +106,39 @@ first frame, an interactive preview keeps reconnecting until you press Q/Esc.
 JPEG decoding and a headless run through YuNet. It does not require physical
 camera hardware. Real board/USB performance still needs a hardware run.
 
-## Normal webcam behavior
+## Camera angles and pose recovery
+
+The detector rechecks uncertain face proposals after aligning their eye/mouth
+landmarks into an upright 192×224 view. This compensates moderate roll, pitch and
+perspective foreshortening, including low-camera views. A candidate must pass a
+new YuNet inference and geometry validation in that view before it can count as
+a hit. A weak proposal itself never counts toward three-frame confirmation.
+
+If no usable proposal exists, a bounded recovery search tries at most two rotated
+or stretched views in one frame, cycling alternatives across frames. It starts
+only when the earlier processing is under 70ms, and does not begin a second
+alternative after 25ms of recovery work. A native inference cannot be interrupted;
+these are scheduling limits rather than a guarantee every frame finishes in 100ms.
+Ordinary accepted faces retain the fast path, and existing distant/backlit crop
+checks remain active. Pose hints retain only an alignment/search region and are
+verified on new pixels every frame; they are never returned as cached hits.
+
+The normal score floor stays **0.88**. Direct detections with unusually
+foreshortened landmark geometry require **0.94** plus additional mouth direction
+and layout checks. Rotated/rectified detections are validated in their upright
+view and mapped back using the exact inverse transform, preserving box/landmark
+alignment in the preview. The 10 FPS cap and three-hit confirmation remain.
+
+`tests/test_pose_detection.py` checks roll/inverted views, synthetic low/high
+perspective and left/right distortions, tilted backlit JPEGs over NCM, fresh-hit
+confirmation, stale-pose expiry, and non-face rejection over a full recovery
+cycle. `tests/benchmark_pose.py` reports acquisition delay and latency. Synthetic
+warps do not recreate real 3-D self-occlusion: an extreme profile with hidden
+eyes/nose/mouth, the back of the head, motion blur, or a full silhouette may still
+be missed. No every-angle or zero-false-positive guarantee is made; retest the
+actual camera angle after restarting the process.
+
+## Standard capture and display
 
 The camera requests 1920 x 1080 at 30 FPS (actual rates depend on the camera).
 MJPEG is requested **after** setting resolution, frame rate, and focus: DirectShow

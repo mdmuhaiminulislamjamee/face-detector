@@ -218,7 +218,7 @@ class LiveFaceDetectorApp:
 
     def _setup_detector(self):
         self.detector = RobustFaceDetector()
-        print("[INFO] YuNet loaded (multi-scale, shadow recovery, strict validation).")
+        print("[INFO] YuNet loaded (multi-scale, shadow + pose recovery, strict validation).")
 
     def _detect_faces(self, frame_bgr):
         return self.detector.detect(frame_bgr)
@@ -550,7 +550,7 @@ class LiveFaceDetectorApp:
         )
 
         # Mode Badge
-        engine_str = "Engine: YuNet / Multi-scale + Shadow Recovery"
+        engine_str = "Engine: YuNet / Multi-scale + Shadow + Pose"
         cv2.putText(
             frame,
             engine_str,

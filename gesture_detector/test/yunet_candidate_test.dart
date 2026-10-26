@@ -4,6 +4,49 @@ import 'package:face_detector/detection/yunet_candidate.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'foreshortened pose uses a stronger score and coherent mouth landmarks',
+    () {
+      final profile = YuNetCandidate(
+        const FaceBox(100, 100, 100, 120),
+        .96,
+        const [(145, 135), (155, 135), (170, 150), (145, 180), (163, 180)],
+      );
+      expect(validYuNetCandidate(profile), isTrue);
+      expect(
+        validYuNetCandidate(
+          YuNetCandidate(profile.box, .90, profile.landmarks),
+        ),
+        isFalse,
+      );
+      expect(
+        validYuNetCandidate(
+          YuNetCandidate(profile.box, .90, profile.landmarks),
+          proposal: true,
+        ),
+        isTrue,
+      );
+      expect(
+        validYuNetCandidate(
+          YuNetCandidate(profile.box, .99, [
+            ...profile.landmarks.take(4),
+            profile.landmarks[3],
+          ]),
+        ),
+        isFalse,
+      );
+      expect(
+        validYuNetCandidate(
+          YuNetCandidate(profile.box, .99, [
+            ...profile.landmarks.take(3),
+            profile.landmarks[4],
+            profile.landmarks[3],
+          ]),
+        ),
+        isFalse,
+      );
+    },
+  );
   final valid = YuNetCandidate(const FaceBox(100, 100, 100, 120), .95, const [
     (125, 130),
     (175, 130),

@@ -60,8 +60,8 @@ bool validYuNetCandidate(YuNetCandidate face, {bool proposal = false}) {
       (!proposal && face.score < threshold) ||
       ![box.x, box.y, box.width, box.height].every((v) => v.isFinite) ||
       math.min(box.width, box.height) < 18 ||
-      box.height / box.width < 0.65 ||
-      box.height / box.width > 1.9) {
+      box.height / box.width < .45 ||
+      box.height / box.width > 2.4) {
     return false;
   }
   for (final (x, y) in face.landmarks) {
@@ -77,21 +77,43 @@ bool validYuNetCandidate(YuNetCandidate face, {bool proposal = false}) {
   final [eyeA, eyeB, nose, mouthA, mouthB] = face.landmarks;
   final ex = eyeB.$1 - eyeA.$1, ey = eyeB.$2 - eyeA.$2;
   final eyeDistance = math.sqrt(ex * ex + ey * ey);
-  if (eyeDistance < .15 * box.width || eyeDistance > .85 * box.width) {
+  if (eyeDistance < .08 * box.width || eyeDistance > .85 * box.width) {
     return false;
   }
   final mx = (eyeA.$1 + eyeB.$1) / 2, my = (eyeA.$2 + eyeB.$2) / 2;
   final dx = (mouthA.$1 + mouthB.$1) / 2 - mx;
   final dy = (mouthA.$2 + mouthB.$2) / 2 - my;
   final faceHeight = math.sqrt(dx * dx + dy * dy);
-  if (faceHeight < .12 * box.height ||
-      faceHeight > .85 * box.height ||
-      ((ex * dx + ey * dy) / (eyeDistance * faceHeight)).abs() > .65) {
+  if (faceHeight < .08 * box.height || faceHeight > .90 * box.height) {
     return false;
   }
   final noseDepth =
       ((nose.$1 - mx) * dx + (nose.$2 - my) * dy) / (faceHeight * faceHeight);
-  return noseDepth >= -.15 && noseDepth <= 1.25;
+  final skew = ((ex * dx + ey * dy) / (eyeDistance * faceHeight)).abs();
+  if (box.height / box.width >= .65 &&
+      box.height / box.width <= 1.9 &&
+      eyeDistance >= .15 * box.width &&
+      faceHeight >= .12 * box.height &&
+      faceHeight <= .85 * box.height &&
+      skew <= .65 &&
+      noseDepth >= -.15 &&
+      noseDepth <= 1.25) {
+    return true;
+  }
+  // Foreshortened pitch/yaw needs stronger confidence and coherent mouth topology.
+  final mxLine = mouthB.$1 - mouthA.$1, myLine = mouthB.$2 - mouthA.$2;
+  final mouthDistance = math.sqrt(mxLine * mxLine + myLine * myLine);
+  if ((!proposal && face.score < .94) ||
+      skew > .9 ||
+      noseDepth < -.4 ||
+      noseDepth > 1.35 ||
+      mouthDistance < .05 * box.width ||
+      mouthDistance > .85 * box.width) {
+    return false;
+  }
+  final alignment = (ex * mxLine + ey * myLine) / (eyeDistance * mouthDistance);
+  final handedness = (ex * dy - ey * dx) / (eyeDistance * faceHeight);
+  return alignment >= .2 && handedness >= .2;
 }
 
 List<YuNetCandidate> deduplicateYuNet(List<YuNetCandidate> candidates) {
